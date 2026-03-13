@@ -1,0 +1,9 @@
+{
+  "auc": 1.0,
+  "mmd": 0.9347143309857406,
+  "real_std": 1.0257229804992676,
+  "synth_std": 1.274939775466919,
+  "n": 500,
+  "real_path": "../data/diffusion_ready/appliances/train_seq.npy",
+  "synth_path": "synthetic/synthetic_samples.npy"
+}

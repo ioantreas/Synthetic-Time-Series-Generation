@@ -1,0 +1,15 @@
+dataset: ../data/diffusion_ready/air_quality/train_seq.npy
+
+freq: 10min
+
+context_length: 48
+prediction_length: 48
+
+normalization: mean
+
+diffusion_config: diffusion_config
+
+batch_size: 32
+lr: 0.0002
+max_epochs: 1
+num_workers: 0

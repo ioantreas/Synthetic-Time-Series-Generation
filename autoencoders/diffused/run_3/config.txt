@@ -1,0 +1,1 @@
+appliances, latents, normalized, custom config, new data, no mean normalization

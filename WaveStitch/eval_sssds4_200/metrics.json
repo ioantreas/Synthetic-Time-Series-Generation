@@ -1,0 +1,15 @@
+{
+  "real_mean": -0.05338425561785698,
+  "real_std": 1.0257229804992676,
+  "synth_mean": 0.1243433877825737,
+  "synth_std": 1.2740155458450317,
+  "discriminative_auc": 1.0,
+  "mmd_rbf": 0.916104376310652,
+  "n_real_used": 500,
+  "n_synth_used": 500,
+  "seq_len": 168,
+  "channels": 28,
+  "real_path": "/home/spyfull/synthetic_time_series_generation/data/diffusion_ready/appliances/train_seq.npy",
+  "synth_path": "/home/spyfull/synthetic_time_series_generation/WaveStitch/synthetic/synthetic_samples_200.npy",
+  "seed": 0
+}
