@@ -75,6 +75,7 @@ def main():
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    print(out)
 
     np.save(out / "train_latents.npy", train_latents)
     np.save(out / "test_latents.npy", test_latents)

@@ -285,8 +285,8 @@ def evaluate(real, synth, outdir):
             print(k,":",v)
 
     plot_sequences(real,synth,outdir,0)
-    plot_sequences(real,synth,outdir,10)
-    plot_sequences(real,synth,outdir,20)
+    plot_sequences(real,synth,outdir,8)
+    plot_sequences(real,synth,outdir,)
 
     plot_fft(real,synth,outdir)
     plot_histogram(real,synth,outdir)

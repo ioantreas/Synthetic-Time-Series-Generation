@@ -312,8 +312,8 @@ def main():
     outdir.mkdir(exist_ok=True)
 
     plot_sequences(real, synth, outdir, 0)
-    plot_sequences(real, synth, outdir, 10)
-    plot_sequences(real, synth, outdir, 20)
+    plot_sequences(real, synth, outdir, 6)
+    plot_sequences(real, synth, outdir, 8)
 
     plot_fft(real, synth, outdir)
     plot_histogram(real, synth, outdir)

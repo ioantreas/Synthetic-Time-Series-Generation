@@ -79,10 +79,10 @@ def main():
     print("Computing latent normalization...")
 
     mean = train_latents.mean(axis=(0,1), keepdims=True)
-    std  = train_latents.std(axis=(0,1), keepdims=True) + 1e-8
+    std = train_latents.std(axis=(0,1), keepdims=True) + 1e-8
 
     train_latents = (train_latents - mean) / std
-    test_latents  = (test_latents - mean) / std
+    test_latents = (test_latents - mean) / std
 
     # -------------------------------------------------
 
