@@ -3,4 +3,4 @@ data/
 *.pt
 *.ckpt
 out/
-diffused/
+/autoencoders/diffused/*
