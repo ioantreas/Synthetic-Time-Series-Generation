@@ -335,10 +335,10 @@ def main():
     out_root.mkdir(parents=True, exist_ok=True)
 
     # -------------------------
-    # test -> test (paired reconstruction)
+    # test -> test (paired reconstruction_strong)
     # -------------------------
 
-    print("\nRunning test -> test reconstruction")
+    print("\nRunning test -> test reconstruction_strong")
 
     real, recon, _ = encode_decode(
         model,

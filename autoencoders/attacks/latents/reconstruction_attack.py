@@ -2,6 +2,7 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
+from matplotlib import pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 
 from pathlib import Path
@@ -105,6 +106,27 @@ def evaluate(model, loader, device):
 
     return total_mse / len(loader)
 
+def plot_sequences(real, pred, outdir, channels=[0, 8, 16]):
+
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    for ch in channels:
+
+        if ch >= real.shape[2]:
+            print(f"Skipping channel {ch}")
+            continue
+
+        plt.figure(figsize=(10,4))
+
+        plt.plot(real[0,:,ch], label="real")
+        plt.plot(pred[0,:,ch], label="reconstructed")
+
+        plt.legend()
+        plt.title(f"Reconstruction (channel {ch})")
+
+        plt.savefig(outdir / f"sequence_{ch}.png")
+        plt.close()
+
 def get_predictions(model, loader, device):
     model.eval()
     preds = []
@@ -165,15 +187,23 @@ def main(args):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Save model
-    torch.save(model.state_dict(), out_dir / "attacker.pt")
+    torch.save(model.state_dict(), out_dir / "attacker_decoder.pt")
 
     # Save metrics
     with open(out_dir / "metrics.json", "w") as f:
         json.dump({"test_mse": final_mse}, f, indent=2)
 
+    preds = get_predictions(model, test_loader, device)
+
+    # save predictions
     if args.save_preds:
-        preds = get_predictions(model, test_loader, device)
         np.save(out_dir / "predictions.npy", preds)
+
+    # also get real sequences (aligned with preds)
+    real = test_seq[:len(preds)]
+
+    # plot
+    plot_sequences(real, preds, out_dir / "plots", channels=[0, 4, 8])
 
 # -----------------------------
 # CLI

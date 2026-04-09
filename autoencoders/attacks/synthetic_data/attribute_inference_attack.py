@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader, TensorDataset
+from statsmodels.tsa.stattools import acf
 
 import sys
 from pathlib import Path as P
@@ -133,8 +134,52 @@ def evaluate(model, loader, device):
 
     mse = ((pred - tgt) ** 2).mean()
     mae = np.abs(pred - tgt).mean()
+    rmse_val = rmse(tgt, pred)
+    mape_val = mape_safe(tgt, pred)
+    acf_val = acf_diff(tgt, pred)
 
-    return mse, mae
+    return {
+        "mse": float(mse),
+        "mae": float(mae),
+        "rmse": float(rmse_val),
+        "mape": float(mape_val),
+        "acf_diff": float(acf_val)
+    }
+
+# ============================================================
+# Metrics
+# ============================================================
+
+
+def rmse(x, y):
+    return np.sqrt(((x - y) ** 2).mean())
+
+
+def mape_safe(x, y):
+    mask = np.abs(x) > 0.1
+    return (np.abs((x[mask] - y[mask]) / x[mask])).mean() * 100
+
+
+def acf_diff(real, pred, nlags=40):
+    errs = []
+    C = real.shape[2]
+
+    for c in range(C):
+        rseries = real[:, :, c].reshape(-1)
+        pseries = pred[:, :, c].reshape(-1)
+
+        if np.std(rseries) < 1e-8 or np.std(pseries) < 1e-8:
+            continue
+
+        r = acf(rseries, nlags=nlags, fft=True)
+        p = acf(pseries, nlags=nlags, fft=True)
+
+        errs.append(np.mean(np.abs(r - p)))
+
+    if len(errs) == 0:
+        return 0.0
+
+    return np.mean(errs)
 
 
 # ============================================================
@@ -263,7 +308,7 @@ def main():
         loss = train(model_synth, train_synth_loader, opt, loss_fn, device)
         print(f"[Synth] epoch {ep} loss {loss:.6f}")
 
-    mse_synth, mae_synth = evaluate(model_synth, test_loader, device)
+    metrics_synth = evaluate(model_synth, test_loader, device)
 
     # --------------------------------
     # Train real baseline
@@ -278,24 +323,21 @@ def main():
         loss = train(model_real, train_real_loader, opt, loss_fn, device)
         print(f"[Real] epoch {ep} loss {loss:.6f}")
 
-    mse_real, mae_real = evaluate(model_real, test_loader, device)
+    metrics_real = evaluate(model_real, test_loader, device)
 
     # --------------------------------
     # Results
     # --------------------------------
 
     results = {
-        "synthetic_attack": {
-            "mse": float(mse_synth),
-            "mae": float(mae_synth)
-        },
-        "real_baseline": {
-            "mse": float(mse_real),
-            "mae": float(mae_real)
-        },
+        "synthetic_attack": metrics_synth,
+        "real_baseline": metrics_real,
         "ratios": {
-            "mse_ratio": float(mse_synth / mse_real),
-            "mae_ratio": float(mae_synth / mae_real)
+            "mse_ratio": metrics_synth["mse"] / metrics_real["mse"],
+            "mae_ratio": metrics_synth["mae"] / metrics_real["mae"],
+            "rmse_ratio": metrics_synth["rmse"] / metrics_real["rmse"],
+            "mape_ratio": metrics_synth["mape"] / metrics_real["mape"],
+            "acf_ratio": metrics_synth["acf_diff"] / (metrics_real["acf_diff"] + 1e-8)
         }
     }
 

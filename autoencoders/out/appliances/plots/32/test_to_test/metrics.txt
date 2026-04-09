@@ -1,8 +1,0 @@
-===== METRICS =====
-
-reconstruction_mse: 0.03490249440073967
-acf_difference: 0.01236992374084037
-correlation_difference: 0.028278543202006953
-fft_difference: 7.3842773498997465
-histogram_distance: 0.0638675392728364
-num_samples: 2000
