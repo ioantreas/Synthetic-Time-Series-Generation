@@ -1,0 +1,20 @@
+dataset: ../data/diffusion_ready/har/train_seq.npy
+
+context_length: 128
+prediction_length: 0
+
+normalization: mean
+
+diffusion_config: transformer_latent_config
+
+batch_size: 64
+lr: 0.00003
+max_epochs: 300
+num_workers: 0
+
+use_features: false
+use_lags: false
+init_skip: false
+
+device: cuda:0
+gradient_clip_val: null

@@ -1,0 +1,15 @@
+{
+    "config": "npy.yaml",
+    "device": "cuda:0",
+    "seed": 1,
+    "train_data": "../../data/diffusion_ready/air_quality/train_seq_no_time.npy",
+    "test_data": "../../unconditional-time-series-diffusion/results/inference/silo/air_quality/vfl/hybrid/10/full/single_block/test_data.npy",
+    "missing_ratio": 0.5,
+    "mask_type": "block",
+    "unconditional": false,
+    "modelfolder": "save/air_quality/full",
+    "nsample": 10,
+    "out_dir": "./air_quality/full",
+    "num_examples": null,
+    "fixed_mask": "../../unconditional-time-series-diffusion/results/inference/silo/air_quality/vfl/hybrid/10/full/single_block/mask.npy"
+}

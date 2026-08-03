@@ -1,0 +1,41 @@
+name: appliances
+
+train_dataset: ../data/diffusion_ready/har/train_seq.npy
+test_dataset: ../data/diffusion_ready/har/test_seq.npy
+
+model: conditional
+
+diffusion_config: transformer_latent_config   # your larger backbone
+
+normalization: mean
+
+use_features: false
+use_lags: false
+
+freq: H
+
+context_length: 128
+prediction_length: 0
+
+lr: 3e-5                  # same as your method
+batch_size: 64
+max_epochs: 300
+num_batches_per_epoch: 128
+
+gradient_clip_val: 0.5
+
+init_skip: false
+noise_observed: true
+
+use_validation_set: true
+eval_every: 10
+
+device: cuda:0
+
+setup: missing_values
+
+train_missing_scenario: BM-E
+missing_scenario: BM-E
+missing_values: 64
+
+do_final_eval: true

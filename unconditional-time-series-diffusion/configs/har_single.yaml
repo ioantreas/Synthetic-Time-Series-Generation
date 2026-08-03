@@ -1,0 +1,22 @@
+dataset:
+  - ../data/diffusion_ready/har/transformers/single/0/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/single/1/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/single/2/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/single/3/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/single/4/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/single/5/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/single/6/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/single/7/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/single/8/train_latents.npy
+
+context_length: 16
+prediction_length: 0
+
+normalization: mean
+
+diffusion_config: transformer_latent_config
+
+batch_size: 64
+lr: 0.00003
+max_epochs: 300
+num_workers: 0

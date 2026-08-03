@@ -1,0 +1,16 @@
+dataset:
+  - ../data/diffusion_ready/har/transformers/1/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/2/train_latents.npy
+  - ../data/diffusion_ready/har/transformers/3/train_latents.npy
+
+context_length: 16
+prediction_length: 0
+
+normalization: mean
+
+diffusion_config: transformer_latent_config
+
+batch_size: 64
+lr: 0.00003
+max_epochs: 300
+num_workers: 0

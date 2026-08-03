@@ -1,1 +1,0 @@
-pamap2, latents, normalized, custom config, new data

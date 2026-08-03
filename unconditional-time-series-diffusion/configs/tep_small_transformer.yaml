@@ -1,0 +1,18 @@
+dataset:
+  - ../data/diffusion_ready/tep/transformers/small/1/train_latents.npy
+  - ../data/diffusion_ready/tep/transformers/small/2/train_latents.npy
+  - ../data/diffusion_ready/tep/transformers/small/3/train_latents.npy
+  - ../data/diffusion_ready/tep/transformers/small/4/train_latents.npy
+  - ../data/diffusion_ready/tep/transformers/small/5/train_latents.npy
+
+context_length: 16
+prediction_length: 0
+
+normalization: mean
+
+diffusion_config: transformer_latent_config
+
+batch_size: 64
+lr: 0.00003
+max_epochs: 300
+num_workers: 0

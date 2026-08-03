@@ -1,4 +1,5 @@
 import argparse
+import json
 from pathlib import Path
 import numpy as np
 import torch
@@ -12,8 +13,12 @@ from torch.utils.data import Dataset, DataLoader
 
 class WindowDataset(Dataset):
 
-    def __init__(self, path):
+    def __init__(self, path, feature_idx=None):
         x = np.load(path).astype(np.float32)   # (N,L,C)
+
+        if feature_idx is not None:
+            x = x[:, :, feature_idx]
+
         self.x = torch.from_numpy(x)
 
     def __len__(self):
@@ -270,13 +275,14 @@ def main():
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--latent_steps", type=int, default=16)
     parser.add_argument("--out_dir", default="silo_ae_out")
+    parser.add_argument("--feature_idx", type=int, nargs="+", default=None, help="Indices of features to use. Default: all features")
 
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-    ds = WindowDataset(args.dataset)
+    ds = WindowDataset(args.dataset, args.feature_idx)
 
     L,C = ds[0].shape
 
@@ -310,6 +316,20 @@ def main():
 
     (out/"models").mkdir(parents=True,exist_ok=True)
     (out/"latents").mkdir(parents=True,exist_ok=True)
+
+    config = {
+        "dataset": args.dataset,
+        "latent_steps": args.latent_steps,
+        "num_features": C,
+        "feature_idx": args.feature_idx if args.feature_idx is not None else "all",
+        "seq_len": L,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "lr": args.lr
+    }
+
+    with open(out / "config.json", "w") as f:
+        json.dump(config, f, indent=4)
 
 
     torch.save(

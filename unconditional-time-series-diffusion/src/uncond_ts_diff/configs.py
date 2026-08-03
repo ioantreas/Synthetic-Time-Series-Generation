@@ -2,6 +2,26 @@
 # SPDX-License-Identifier: Apache-2.0
 from uncond_ts_diff.utils import linear_beta_schedule
 
+custom_backbone = {
+    "input_dim": 1,
+    "hidden_dim": 256,
+    "output_dim": 1,
+    "step_emb": 128,
+    "num_residual_blocks": 8,
+    "dropout": 0.1,
+    "residual_block": "s4",
+}
+
+custom_big_backbone = {
+    "input_dim": 1,
+    "hidden_dim": 256,
+    "output_dim": 1,
+    "step_emb": 128,
+    "num_residual_blocks": 12,
+    "dropout": 0.1,
+    "residual_block": "s4",
+}
+
 residual_block_s4_backbone = {
     "input_dim": 1,
     "hidden_dim": 128,
@@ -68,6 +88,33 @@ residual_block_s4_backbone_large = {
     "residual_block": "s4",
 }
 
+transformer_latent_backbone = {
+    "input_dim": 1,
+    "hidden_dim": 768,
+    "output_dim": 1,
+    "step_emb": 256,
+    "num_residual_blocks": 16,
+    "dropout": 0.03,
+    "residual_block": "s4",
+}
+
+transformer_latent_config = {
+    "backbone_parameters": transformer_latent_backbone,
+    "timesteps": 200,
+    "diffusion_scheduler": linear_beta_schedule,
+}
+
+custom_big_config = {
+    "backbone_parameters": custom_big_backbone,
+    "timesteps": 300,
+    "diffusion_scheduler": linear_beta_schedule,
+}
+
+custom_config = {
+    "backbone_parameters": custom_backbone,
+    "timesteps": 200,
+    "diffusion_scheduler": linear_beta_schedule,
+}
 
 diffusion_config = {
     "backbone_parameters": residual_block_s4_backbone,

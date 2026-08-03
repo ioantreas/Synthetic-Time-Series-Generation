@@ -1,6 +1,7 @@
 import argparse
 import numpy as np
 import torch
+import json
 from pathlib import Path
 
 from minimal_autoencoder import SiloTimeOnlyAE
@@ -42,6 +43,14 @@ def main():
 
     parser.add_argument("--out_dir", required=True)
 
+    parser.add_argument(
+        "--feature_idx",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Indices of features to use. Default: all features"
+    )
+
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -49,6 +58,12 @@ def main():
     print("Loading datasets...")
     train = np.load(args.train_data)
     test = np.load(args.test_data)
+
+    original_C = train.shape[2]
+
+    if args.feature_idx is not None:
+        train = train[:, :, args.feature_idx]
+        test = test[:, :, args.feature_idx]
 
     print("Train shape:", train.shape)
     print("Test shape:", test.shape)
@@ -88,6 +103,24 @@ def main():
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
+
+    if args.feature_idx is None:
+        feature_idx_resolved = list(range(original_C))
+    else:
+        feature_idx_resolved = args.feature_idx
+
+    config = {
+        "train_data": args.train_data,
+        "test_data": args.test_data,
+        "model": args.model,
+        "latent_steps": args.latent_steps,
+        "feature_idx": feature_idx_resolved,
+        "num_features": len(feature_idx_resolved),
+        "seq_len": L
+    }
+
+    with open(out / "config.json", "w") as f:
+        json.dump(config, f, indent=4)
 
     np.save(out / "train_latents.npy", train_latents)
     np.save(out / "test_latents.npy", test_latents)

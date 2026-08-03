@@ -1,0 +1,64 @@
+model:
+  target: Models.interpretable_diffusion.gaussian_diffusion.Diffusion_TS
+  params:
+    seq_length: 168                 # window length
+    feature_size: 26                # number of variables
+
+    n_layer_enc: 4
+    n_layer_dec: 4
+
+    d_model: 128
+    n_heads: 8                     # divides 128
+
+    timesteps: 500
+    sampling_timesteps: 500        # use full DDPM for fairness
+
+    loss_type: "l1"
+    beta_schedule: "cosine"
+
+    mlp_hidden_times: 4
+    attn_pd: 0.0
+    resid_pd: 0.0
+    kernel_size: 1
+    padding_size: 0
+
+
+solver:
+  base_lr: 1.0e-4
+  max_epochs: 10000
+
+  results_folder: ./Checkpoints_appliances
+
+  gradient_accumulate_every: 2
+  save_cycle: 150
+
+  ema:
+    decay: 0.995
+    update_interval: 10
+
+  scheduler:
+    target: engine.lr_sch.ReduceLROnPlateauWithWarmup
+    params:
+      factor: 0.5
+      patience: 300
+      min_lr: 1.0e-5
+      threshold: 1.0e-1
+      threshold_mode: rel
+      warmup_lr: 8.0e-4
+      warmup: 100
+      verbose: False
+
+
+dataloader:
+  train_dataset:
+    target: Utils.Data_utils.npy_dataset.NPYDataset
+    params:
+      data_path: ../../data/diffusion_ready/appliances/train_seq_no_time.npy
+  test_dataset:
+    coefficient: 1.0e-2
+    step_size: 5.0e-2
+    sampling_steps: 250
+
+  batch_size: 64
+  sample_size: 256
+  shuffle: True

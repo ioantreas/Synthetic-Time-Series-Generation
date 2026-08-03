@@ -1,6 +1,50 @@
-data/
-*.npy
-*.pt
-*.ckpt
+# Data directories
+[Dd]ata/
+
+# Generated outputs and experiment results
 out/
-/autoencoders/diffused/*
+output/
+outputs/
+OUTPUT/
+save/
+plots/
+results/
+runs/
+wandb/
+checkpoints/
+Checkpoints*/
+diffused/
+
+# Arrays, checkpoints, and trained model files
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.h5
+*.hdf5
+*.pkl
+*.joblib
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Local virtual environments
+.venv/
+venv/
+env/
+
+# Operating-system files
+.DS_Store
+Thumbs.db

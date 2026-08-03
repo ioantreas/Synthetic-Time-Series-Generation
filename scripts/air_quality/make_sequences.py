@@ -7,9 +7,9 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 SEQ_LEN = 168
 
-def make_sequences(arr, seq_len):
+def make_sequences(arr, seq_len, stride=2):
     X = []
-    for i in range(len(arr) - seq_len):
+    for i in range(0, len(arr) - seq_len, stride):
         X.append(arr[i:i+seq_len])
     return np.stack(X)
 

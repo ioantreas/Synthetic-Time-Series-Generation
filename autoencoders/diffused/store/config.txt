@@ -1,1 +1,0 @@
-store, latents, normalized, custom config, new data
