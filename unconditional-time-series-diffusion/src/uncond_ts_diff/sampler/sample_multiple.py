@@ -1280,8 +1280,7 @@ def main():
     device = args.device if torch.cuda.is_available() else "cpu"
 
     ckpt_path = Path(
-        # f"../../../results/lightning_logs/version_{args.version}/checkpoints/last.ckpt"
-        f"/media/aioannou/OS/aioannou_storage/results/lightning_logs/version_{args.version}/checkpoints/last.ckpt"
+        f"../../../results/lightning_logs/version_{args.version}/checkpoints/last.ckpt"
     )
     model = TSDiff.load_from_checkpoint(ckpt_path).to(device)
 
