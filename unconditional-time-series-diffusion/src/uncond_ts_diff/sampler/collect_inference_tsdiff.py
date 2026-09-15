@@ -10,7 +10,12 @@ def read_primary_metrics(path: Path) -> dict[str, float]:
     with path.open("r", encoding="utf-8") as file:
         values = json.load(file)
 
-    required = {"mse_missing", "crps_missing"}
+    required = {
+        "mse_missing",
+        "crps_missing",
+        "inference_time_sec",
+        "inference_time_per_imputation_sec",
+    }
     missing = required - values.keys()
 
     if missing:
@@ -19,6 +24,10 @@ def read_primary_metrics(path: Path) -> dict[str, float]:
     return {
         "mse_missing": float(values["mse_missing"]),
         "crps_missing": float(values["crps_missing"]),
+        "inference_time_sec": float(values["inference_time_sec"]),
+        "inference_time_per_imputation_sec": float(
+            values["inference_time_per_imputation_sec"]
+        ),
     }
 
 
@@ -52,7 +61,7 @@ def main() -> None:
         "--root",
         type=Path,
         default=Path("../../../results/inference/tsdiff"),
-        help="Root containing dataset/seed_N/scenario/metrics.json",
+        help="Root containing dataset/scenario/seed_N/metrics.json",
     )
     args = parser.parse_args()
 
@@ -78,6 +87,10 @@ def main() -> None:
                     **metadata,
                     "mse": metrics["mse_missing"],
                     "crps": metrics["crps_missing"],
+                    "inference_time_sec": metrics["inference_time_sec"],
+                    "inference_time_per_imputation_sec": metrics[
+                        "inference_time_per_imputation_sec"
+                    ],
                     "metrics_path": str(path),
                 }
             )
@@ -97,6 +110,16 @@ def main() -> None:
             mse_std=("mse", "std"),
             crps_mean=("crps", "mean"),
             crps_std=("crps", "std"),
+            inference_time_sec_mean=("inference_time_sec", "mean"),
+            inference_time_sec_std=("inference_time_sec", "std"),
+            inference_time_per_imputation_sec_mean=(
+                "inference_time_per_imputation_sec",
+                "mean",
+            ),
+            inference_time_per_imputation_sec_std=(
+                "inference_time_per_imputation_sec",
+                "std",
+            ),
         )
         .sort_values(["dataset", "scenario"])
     )
@@ -119,7 +142,11 @@ def main() -> None:
 
     if not incomplete.empty:
         print("\nWarning: groups without exactly five seeds:")
-        print(incomplete[["dataset", "scenario", "num_seeds"]].to_string(index=False))
+        print(
+            incomplete[
+                ["dataset", "scenario", "num_seeds"]
+            ].to_string(index=False)
+        )
 
 
 if __name__ == "__main__":

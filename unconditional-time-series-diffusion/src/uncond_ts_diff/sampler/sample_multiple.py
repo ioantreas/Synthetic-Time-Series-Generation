@@ -363,7 +363,7 @@ def client_get_partial_guidance_latent(
         mask,
         latent_mean,
         latent_std,
-        steps=100,
+        steps=200,
         lr=1e-2,
         prior_weight=1e-3,
         x_true=None,
@@ -1252,7 +1252,7 @@ def main():
     parser.add_argument("--anchor_type", type=str, default="recovered",  choices=["recovered", "interpolation", "oracle"],
     help="Anchor used for latent guidance: recovered (ours), interpolation, or oracle")
 
-    parser.add_argument("--client_steps", type=int, default=100)
+    parser.add_argument("--client_steps", type=int, default=200)
     parser.add_argument("--client_lr", type=float, default=1e-2)
     parser.add_argument("--client_prior_weight", type=float, default=1e-3)
     parser.add_argument("--num_client_plot_channels", type=int, default=3)
