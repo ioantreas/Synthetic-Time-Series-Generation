@@ -66,7 +66,8 @@ def train(output_directory,
         diffusion_config["beta_T"],
     )
 
-    output_directory = os.path.join(output_directory, local_path)
+    # output_directory = os.path.join(output_directory, local_path)
+    output_directory = os.path.join(output_directory, f"{masking}_k{missing_k}", local_path)
     os.makedirs(output_directory, exist_ok=True)
     print("output directory", output_directory, flush=True)
 
@@ -168,6 +169,10 @@ if __name__ == "__main__":
                         help="Optional override for train_config.output_directory")
     parser.add_argument("--ckpt_iter", default=None,
                         help='Optional checkpoint iteration or "max"')
+    parser.add_argument("--masking", type=str, choices=["rm", "mnr", "bm"], default=None,
+                        help="Optional override for train_config.masking")
+    parser.add_argument("--missing_k", type=int, default=None,
+                        help="Optional override for train_config.missing_k")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -179,6 +184,10 @@ if __name__ == "__main__":
         train_config["output_directory"] = args.output_directory
     if args.ckpt_iter is not None:
         train_config["ckpt_iter"] = args.ckpt_iter
+    if args.masking is not None:
+        train_config["masking"] = args.masking
+    if args.missing_k is not None:
+        train_config["missing_k"] = args.missing_k
 
     diffusion_config = config["diffusion_config"]
     diffusion_hyperparams = calc_diffusion_hyperparams(**diffusion_config)

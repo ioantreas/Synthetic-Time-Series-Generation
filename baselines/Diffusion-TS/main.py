@@ -3,6 +3,7 @@ import torch
 import argparse
 import numpy as np
 import json
+import time
 import matplotlib.pyplot as plt
 
 from engine.logger import Logger
@@ -11,6 +12,9 @@ from Data.build_dataloader import build_dataloader, build_dataloader_cond
 from Models.interpretable_diffusion.model_utils import unnormalize_to_zero_to_one
 from Utils.io_utils import load_yaml_config, seed_everything, merge_opts_to_config, instantiate_from_config
 
+def sync_cuda():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
 def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch Training Script')
@@ -57,7 +61,7 @@ def parse_args():
         "--eval_scenario",
         type=str,
         required=True,
-        choices=["single_block", "forecast"],
+        choices=["single_block", "forecast", "random", "blackout"],
         help="Evaluation scenario used to organise generated results.",
     )
 
@@ -145,6 +149,9 @@ def main():
         sampling_steps = config['dataloader']['test_dataset']['sampling_steps']
         all_samples = []
 
+        sync_cuda()
+        inference_start = time.perf_counter()
+
         for k in range(args.num_imputation_samples):
             print(f"Imputation {k + 1}/{args.num_imputation_samples}")
 
@@ -161,10 +168,17 @@ def main():
 
             all_samples.append(samples)
 
+        sync_cuda()
+        inference_time = time.perf_counter() - inference_start
+
         all_samples = np.stack(all_samples, axis=1)
         median_pred = np.median(all_samples, axis=1)
 
         metrics, median_pred = compute_metrics(all_samples, reals, masks)
+
+        metrics["inference_time_sec"] = inference_time
+        metrics["inference_time_per_imputation_sec"] = inference_time / args.num_imputation_samples
+        metrics["total_method_time_sec"] = inference_time
 
         np.save(os.path.join(args.result_dir, "all_preds.npy"), all_samples)
         np.save(os.path.join(args.result_dir, "median_pred.npy"), median_pred)

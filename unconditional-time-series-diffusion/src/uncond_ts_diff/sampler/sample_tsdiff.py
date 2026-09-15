@@ -4,6 +4,7 @@ import json
 
 import numpy as np
 import torch
+import time
 
 from uncond_ts_diff.model import TSDiff
 from uncond_ts_diff.sampler.observation_guidance_adapted import DDPMGuidance, DDIMGuidance
@@ -98,6 +99,11 @@ def main():
         guidance=args.guidance,
     ).to(device)
 
+    if device == "cuda":
+        torch.cuda.synchronize()
+
+    inference_start = time.perf_counter()
+
     preds = []
 
     for k in range(args.num_imputation_samples):
@@ -123,9 +129,19 @@ def main():
 
         preds.append(sample.detach().cpu().numpy())
 
+    if device == "cuda":
+        torch.cuda.synchronize()
+
+    inference_time_sec = time.perf_counter() - inference_start
+    inference_time_per_imputation_sec = inference_time_sec / args.num_imputation_samples
+
     all_preds = np.stack(preds, axis=1)
 
     metrics, x_pred = compute_metrics(all_preds, x, mask)
+
+    metrics["inference_time_sec"] = inference_time_sec
+    metrics["inference_time_per_imputation_sec"] = inference_time_per_imputation_sec
+    metrics["total_method_time_sec"] = inference_time_sec
 
     np.save(out_dir / "all_preds.npy", all_preds)
     np.save(out_dir / "median_pred.npy", x_pred)

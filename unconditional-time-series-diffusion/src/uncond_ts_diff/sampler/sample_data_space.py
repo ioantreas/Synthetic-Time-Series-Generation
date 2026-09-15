@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import time
 from matplotlib import pyplot as plt
 
 from uncond_ts_diff.model import TSDiff
@@ -326,6 +327,11 @@ def run_scenario(name, mask_np, out_dir):
 
     set_torch_seed(args.inference_seed + 1_000_000)
 
+    if torch.cuda.is_available() and str(device).startswith("cuda"):
+        torch.cuda.synchronize()
+
+    inference_start = time.perf_counter()
+
     all_preds = []
 
     for k in range(args.num_imputation_samples):
@@ -344,6 +350,12 @@ def run_scenario(name, mask_np, out_dir):
         )
 
         all_preds.append(samples.detach().cpu().numpy())
+
+    if torch.cuda.is_available() and str(device).startswith("cuda"):
+        torch.cuda.synchronize()
+
+    inference_time_sec = time.perf_counter() - inference_start
+    inference_time_per_imputation_sec = inference_time_sec / args.num_imputation_samples
 
     all_preds = np.stack(all_preds, axis=1)
 
@@ -371,6 +383,10 @@ def run_scenario(name, mask_np, out_dir):
         x_true,
         mask_sig,
     )
+
+    guided_metrics["inference_time_sec"] = inference_time_sec
+    guided_metrics["inference_time_per_imputation_sec"] = inference_time_per_imputation_sec
+    guided_metrics["total_method_time_sec"] = inference_time_sec
 
     full_metrics_real = compute_full_metrics(
         x_pred,

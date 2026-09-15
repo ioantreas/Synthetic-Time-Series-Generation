@@ -2,6 +2,7 @@ import os
 import argparse
 import json
 import numpy as np
+import time
 import torch
 import random
 
@@ -10,6 +11,10 @@ from imputers.DiffWaveImputer import DiffWaveImputer
 from imputers.SSSDSAImputer import SSSDSAImputer
 from imputers.SSSDS4Imputer import SSSDS4Imputer
 
+
+def sync_cuda():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
 def quantile_loss(target, forecast, q, eval_points):
     return 2.0 * np.sum(
@@ -108,15 +113,22 @@ def generate(output_directory, ckpt_path, ckpt_iter,
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+    data_torch = torch.from_numpy(data).float().cuda().permute(0, 2, 1)
+    mask_torch = torch.from_numpy(mask).float().cuda().permute(0, 2, 1)
+
     all_batch_predictions = []
+
+    sync_cuda()
+    inference_start = time.perf_counter()
 
     for start in range(0, num_windows, batch_size):
         end = min(start + batch_size, num_windows)
 
-        batch = torch.from_numpy(data[start:end]).float().cuda().permute(0, 2, 1)
-        batch_mask = torch.from_numpy(mask[start:end]).float().cuda().permute(0, 2, 1)
+        batch = data_torch[start:end]
+        batch_mask = mask_torch[start:end]
 
         stochastic_samples = []
+
         for sample_idx in range(num_samples):
             generated = sampling(
                 net,
@@ -127,21 +139,43 @@ def generate(output_directory, ckpt_path, ckpt_iter,
                 only_generate_missing=only_generate_missing,
             )
 
-            # Ensure the stored imputation preserves every observed value exactly.
+            # Preserve observed values exactly.
             generated = generated * (1.0 - batch_mask) + batch * batch_mask
+
+            # Keep the device-to-CPU transfer inside the timed region,
+            # matching the timing protocol used by our method.
             stochastic_samples.append(generated.detach().cpu().numpy())
+
             print(
                 f"batch {start}:{end}, sample {sample_idx + 1}/{num_samples}",
                 flush=True,
             )
 
-        # (B, S, C, T)
-        stochastic_samples = np.stack(stochastic_samples, axis=1)
-        # Convert to the common evaluation layout: (B, S, T, C)
-        stochastic_samples = stochastic_samples.transpose(0, 1, 3, 2)
+        # Do not stack here: CPU post-processing is excluded from timing.
         all_batch_predictions.append(stochastic_samples)
 
-    all_preds = np.concatenate(all_batch_predictions, axis=0)
+    sync_cuda()
+    inference_time = time.perf_counter() - inference_start
+
+    timing = {
+        "inference_time_sec": inference_time,
+        "inference_time_per_imputation_sec": inference_time / num_samples,
+        "total_method_time_sec": inference_time,
+    }
+
+    # CPU-only aggregation is performed after timing.
+    stacked_batches = []
+
+    for stochastic_samples in all_batch_predictions:
+        # list of S arrays [B,C,T] -> [B,S,C,T]
+        stochastic_samples = np.stack(stochastic_samples, axis=1)
+
+        # Common evaluation layout: [B,S,T,C]
+        stochastic_samples = stochastic_samples.transpose(0, 1, 3, 2)
+
+        stacked_batches.append(stochastic_samples)
+
+    all_preds = np.concatenate(stacked_batches, axis=0)
     median_pred = np.median(all_preds, axis=1)
 
     eval_points = 1.0 - mask
@@ -160,6 +194,9 @@ def generate(output_directory, ckpt_path, ckpt_iter,
         "crps": crps,
         "num_samples": int(num_samples),
         "prediction_shape": list(all_preds.shape),
+        "inference_time_sec": timing["inference_time_sec"],
+        "inference_time_per_imputation_sec": timing["inference_time_per_imputation_sec"],
+        "total_method_time_sec": timing["total_method_time_sec"],
     }
     with open(os.path.join(output_directory, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)

@@ -13,21 +13,31 @@ METRIC_PATTERN = re.compile(
     re.MULTILINE,
 )
 
+TIMING_PATTERN = re.compile(
+    r"^(anchor_time_sec|weight_time_sec|inference_time_sec|"
+    r"inference_time_per_imputation_sec|total_method_time_sec):\s*"
+    r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*$",
+    re.MULTILINE,
+)
+
 
 def read_primary_metrics(path: Path) -> dict[str, float]:
-    text = path.read_text(encoding="utf-8")
+    full_text = path.read_text(encoding="utf-8")
 
-    # Read only the first section:
+    # Read MSE/CRPS only from the first section:
     # TARGET/GUIDED SILO: DIFFUSION vs REAL
-    next_section = text.find(
+    primary_text = full_text
+
+    next_section = primary_text.find(
         "=== TARGET/GUIDED SILO: DIFFUSION vs AE ==="
     )
+
     if next_section != -1:
-        text = text[:next_section]
+        primary_text = primary_text[:next_section]
 
     values = {
         name: float(value)
-        for name, value in METRIC_PATTERN.findall(text)
+        for name, value in METRIC_PATTERN.findall(primary_text)
     }
 
     required = {"mse_missing", "crps_missing"}
@@ -37,6 +47,26 @@ def read_primary_metrics(path: Path) -> dict[str, float]:
         raise ValueError(
             f"Missing {sorted(missing)} in {path}"
         )
+
+    timing = {
+        name: float(value)
+        for name, value in TIMING_PATTERN.findall(full_text)
+    }
+
+    required_timing = {
+        "inference_time_sec",
+        "inference_time_per_imputation_sec",
+        "total_method_time_sec",
+    }
+
+    missing_timing = required_timing - timing.keys()
+
+    if missing_timing:
+        raise ValueError(
+            f"Missing timing values {sorted(missing_timing)} in {path}"
+        )
+
+    values.update(timing)
 
     return values
 
@@ -49,21 +79,22 @@ def parse_structure(
     parts = relative.parts
 
     # Expected beginning:
-    # dataset/scenario/guidance/seed_N/...
+    # dataset/seed_N/guidance/scenario/metrics.txt
     if len(parts) < 5:
         raise ValueError(
             f"Unexpected path structure: {relative}"
         )
 
     dataset = parts[0]
-    scenario = parts[1]
+    seed_folder = parts[1]
     guidance = parts[2]
-    seed_folder = parts[3]
+    scenario = parts[3]
 
     match = re.fullmatch(r"seed_(\d+)", seed_folder)
+
     if match is None:
         raise ValueError(
-            f"Expected seed_N as fourth folder in {relative}"
+            f"Expected seed_N as second folder in {relative}"
         )
 
     return {
@@ -76,12 +107,14 @@ def parse_structure(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path("../../../results/inference/spinning"),
-        help="Root containing dataset/scenario/guidance/seed folders",
+        default=Path("../../../results/inference/name/time"),
+        help="Root containing dataset/seed_N/guidance/scenario folders",
     )
+
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -108,6 +141,11 @@ def main() -> None:
                     **metadata,
                     "mse": metrics["mse_missing"],
                     "crps": metrics["crps_missing"],
+                    "anchor_time_sec": metrics.get("anchor_time_sec", float("nan")),
+                    "weight_time_sec": metrics.get("weight_time_sec", float("nan")),
+                    "inference_time_sec": metrics["inference_time_sec"],
+                    "inference_time_per_imputation_sec": metrics["inference_time_per_imputation_sec"],
+                    "total_method_time_sec": metrics["total_method_time_sec"],
                     "metrics_path": str(path),
                 }
             )
@@ -135,6 +173,16 @@ def main() -> None:
             mse_std=("mse", "std"),
             crps_mean=("crps", "mean"),
             crps_std=("crps", "std"),
+            anchor_time_mean=("anchor_time_sec", "mean"),
+            anchor_time_std=("anchor_time_sec", "std"),
+            weight_time_mean=("weight_time_sec", "mean"),
+            weight_time_std=("weight_time_sec", "std"),
+            inference_time_mean=("inference_time_sec", "mean"),
+            inference_time_std=("inference_time_sec", "std"),
+            inference_time_per_imputation_mean=("inference_time_per_imputation_sec", "mean"),
+            inference_time_per_imputation_std=("inference_time_per_imputation_sec", "std"),
+            total_method_time_mean=("total_method_time_sec", "mean"),
+            total_method_time_std=("total_method_time_sec", "std"),
         )
         .sort_values(
             ["dataset", "scenario", "guidance"]
@@ -153,6 +201,7 @@ def main() -> None:
     print(f"Saved per-seed: {raw_output}")
 
     incomplete = summary_df[summary_df["num_seeds"] != 5]
+
     if not incomplete.empty:
         print("\nWarning: groups without exactly five seeds:")
         print(

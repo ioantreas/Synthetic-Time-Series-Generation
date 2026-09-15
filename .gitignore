@@ -48,3 +48,8 @@ env/
 # Operating-system files
 .DS_Store
 Thumbs.db
+
+**/build/
+**/*.egg-info/
+**/*.so
+**/*.o

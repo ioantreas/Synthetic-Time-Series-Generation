@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,10 @@ def set_torch_seed(seed):
 
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+def sync_cuda():
+    if torch.cuda.is_available() and str(device).startswith("cuda"):
+        torch.cuda.synchronize()
 
 # =========================================================
 # AUTOENCODER
@@ -264,6 +269,11 @@ def sample_decoder_guided(
 ):
     x = torch.randn(num_samples, seq_len, num_channels, device=device,)
 
+    server_to_client_bytes = 0
+    client_to_server_bytes = 0
+    communication_trace = []
+    cumulative_bytes = 0
+
     for i in reversed(range(model.timesteps)):
         print(i)
 
@@ -295,8 +305,11 @@ def sample_decoder_guided(
             1,
         )
 
-        # Decode x0_hat, measure observed-space error and
-        # backpropagate through the decoder.
+        # Server -> client: send the current clean latent estimate.
+        step_server_to_client_bytes = x0_hat.numel() * x0_hat.element_size()
+        server_to_client_bytes += step_server_to_client_bytes
+
+        # All refinement iterations are performed locally at the client.
         x0_guided = refine_latent_from_observations(
             z_initial=x0_hat,
             x_obs=x_obs,
@@ -304,6 +317,22 @@ def sample_decoder_guided(
             steps=steps,
             scale=guidance_scale,
         )
+
+        # Client -> server: return the final refined latent estimate.
+        step_client_to_server_bytes = x0_guided.numel() * x0_guided.element_size()
+        client_to_server_bytes += step_client_to_server_bytes
+
+        step_total_bytes = step_server_to_client_bytes + step_client_to_server_bytes
+        cumulative_bytes += step_total_bytes
+
+        communication_trace.append({
+            "reverse_step": model.timesteps - i,
+            "diffusion_t": i,
+            "server_to_client_bytes": step_server_to_client_bytes,
+            "client_to_server_bytes": step_client_to_server_bytes,
+            "total_bytes": step_total_bytes,
+            "cumulative_bytes": cumulative_bytes,
+        })
 
         alpha_bar_prev = extract(model.alphas_cumprod_prev, t, x.shape)
 
@@ -327,8 +356,7 @@ def sample_decoder_guided(
         else:
             x = x0_guided
 
-    return x
-
+    return x, server_to_client_bytes, client_to_server_bytes, communication_trace
 
 # =========================================================
 # METRICS
@@ -529,15 +557,21 @@ def run_scenario(name, mask_np, out_dir):
 
     set_torch_seed(args.inference_seed + 1_000_000)
 
+    sync_cuda()
+    inference_start = time.perf_counter()
+
     all_preds = []
+    server_to_client_bytes = 0
+    client_to_server_bytes = 0
+    communication_trace_sum = None
 
     for k in range(args.num_imputation_samples):
-
         print(
-            f"Generating sample {k+1}/{args.num_imputation_samples}"
+            f"Generating sample {k + 1}/{args.num_imputation_samples}"
         )
 
-        samples = sample_decoder_guided(
+        (samples, sample_server_to_client_bytes, sample_client_to_server_bytes,
+         sample_communication_trace) = sample_decoder_guided(
             model=model,
             num_samples=args.num_samples,
             seq_len=args.latent_steps,
@@ -554,6 +588,50 @@ def run_scenario(name, mask_np, out_dir):
         all_preds.append(
             decoded.detach().cpu().numpy()
         )
+
+        server_to_client_bytes += sample_server_to_client_bytes
+        client_to_server_bytes += sample_client_to_server_bytes
+
+        if communication_trace_sum is None:
+            communication_trace_sum = [
+                {
+                    "reverse_step": row["reverse_step"],
+                    "diffusion_t": row["diffusion_t"],
+                    "server_to_client_bytes": row["server_to_client_bytes"],
+                    "client_to_server_bytes": row["client_to_server_bytes"],
+                    "total_bytes": row["total_bytes"],
+                }
+                for row in sample_communication_trace
+            ]
+        else:
+            for total_row, sample_row in zip(communication_trace_sum, sample_communication_trace):
+                total_row["server_to_client_bytes"] += sample_row["server_to_client_bytes"]
+                total_row["client_to_server_bytes"] += sample_row["client_to_server_bytes"]
+                total_row["total_bytes"] += sample_row["total_bytes"]
+
+    sync_cuda()
+    inference_time = time.perf_counter() - inference_start
+
+    communication_total_bytes = server_to_client_bytes + client_to_server_bytes
+
+    inference_time_per_imputation_sec = inference_time / args.num_imputation_samples
+    communication_per_imputation_bytes = communication_total_bytes / args.num_imputation_samples
+
+    timing = {
+        "inference_time_sec": inference_time,
+        "inference_time_per_imputation_sec": inference_time_per_imputation_sec,
+        "total_method_time_sec": inference_time,
+    }
+
+    cumulative_per_imputation_bytes = 0.0
+
+    for row in communication_trace_sum:
+        row["server_to_client_bytes_per_imputation"] = row["server_to_client_bytes"] / args.num_imputation_samples
+        row["client_to_server_bytes_per_imputation"] = row["client_to_server_bytes"] / args.num_imputation_samples
+        row["total_bytes_per_imputation"] = row["total_bytes"] / args.num_imputation_samples
+
+        cumulative_per_imputation_bytes += row["total_bytes_per_imputation"]
+        row["cumulative_bytes_per_imputation"] = cumulative_per_imputation_bytes
 
     all_preds = np.stack(
         all_preds,
@@ -614,6 +692,27 @@ def run_scenario(name, mask_np, out_dir):
     full_metrics_real = compute_full_metrics(x_pred, x_true)
     full_metrics_ae = compute_full_metrics(x_pred, x_ae)
 
+    communication_trace_path = scenario_dir / "communication_trace.csv"
+
+    with open(communication_trace_path, "w") as f:
+        f.write(
+            "reverse_step,diffusion_t,"
+            "server_to_client_bytes_per_imputation,"
+            "client_to_server_bytes_per_imputation,"
+            "total_bytes_per_imputation,"
+            "cumulative_bytes_per_imputation\n"
+        )
+
+        for row in communication_trace_sum:
+            f.write(
+                f"{row['reverse_step']},"
+                f"{row['diffusion_t']},"
+                f"{row['server_to_client_bytes_per_imputation']},"
+                f"{row['client_to_server_bytes_per_imputation']},"
+                f"{row['total_bytes_per_imputation']},"
+                f"{row['cumulative_bytes_per_imputation']}\n"
+            )
+
     with open(scenario_dir / "metrics.txt", "w") as f:
         f.write("=== TARGET/GUIDED SILO: DIFFUSION vs REAL ===\n")
         for k, v in guided_metrics.items():
@@ -639,6 +738,16 @@ def run_scenario(name, mask_np, out_dir):
         for k, v in full_metrics_ae.items():
             f.write(f"{k}: {v}\n")
 
+        f.write("\n=== TIMING ===\n")
+        for k, v in timing.items():
+            f.write(f"{k}: {v}\n")
+
+        f.write("\n=== COMMUNICATION ===\n")
+        f.write(f"communication_server_to_client_bytes: {server_to_client_bytes}\n")
+        f.write(f"communication_client_to_server_bytes: {client_to_server_bytes}\n")
+        f.write(f"communication_total_bytes: {communication_total_bytes}\n")
+        f.write(f"communication_per_imputation_bytes: {communication_per_imputation_bytes}\n")
+
     print("\nSaved results to:", scenario_dir)
     print("\n=== TARGET/GUIDED SILO: DIFFUSION vs REAL ===")
     for k, v in guided_metrics.items():
@@ -647,6 +756,7 @@ def run_scenario(name, mask_np, out_dir):
     print("\n=== OTHER SILOS ANCHOR CHECK: DIFFUSION vs REAL ===")
     for k, v in other_metrics_real.items():
         print(f"{k}: {v}")
+
 
     # plots target/guided features
     sample_idx = 0

@@ -86,6 +86,10 @@ def read_metrics(path: Path) -> dict[str, float]:
         return parse_object(np.load(path, allow_pickle=True), path)
     raise ValueError(f"Unsupported format: {suffix}")
 
+def read_timing(path: Path) -> float:
+    with path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+    return float(data["total_method_time_sec"])
 
 def metric_candidates(seed_dir: Path) -> list[Path]:
     patterns = ("metrics.json", "metrics.txt", "metrics.log", "result_nsample*.pk", "result_nsample*.pkl", "result*.pk", "result*.pkl", "metrics.npz", "metrics.npy")
@@ -98,6 +102,8 @@ def metric_candidates(seed_dir: Path) -> list[Path]:
                 seen.add(path)
     return output
 
+def timing_candidates(seed_dir: Path) -> list[Path]:
+    return sorted(seed_dir.rglob("timing.json"))
 
 def discover_runs(root: Path, method: str) -> list[tuple[str, str, int, Path]]:
     pattern = "*/full/*/seed_*" if method == "csdi" else "*/*/seed_*"
@@ -145,7 +151,26 @@ def main() -> None:
         for path in candidates:
             try:
                 metrics = read_metrics(path)
-                rows.append({"dataset": dataset, "scenario": scenario, "seed": seed, "mse": metrics["mse"], "crps": metrics["crps"], "metrics_path": str(path)})
+
+                time = np.nan
+                timing_path = ""
+                if args.method == "csdi":
+                    timings = timing_candidates(seed_dir)
+                    if not timings:
+                        raise FileNotFoundError(f"No timing.json found under {seed_dir}")
+                    timing_path = str(timings[0])
+                    time = read_timing(timings[0])
+
+                rows.append({
+                    "dataset": dataset,
+                    "scenario": scenario,
+                    "seed": seed,
+                    "mse": metrics["mse"],
+                    "crps": metrics["crps"],
+                    "time": time,
+                    "metrics_path": str(path),
+                    "timing_path": timing_path,
+                })
                 break
             except Exception as error:
                 errors.append(f"{path.name}: {error}")
@@ -156,7 +181,15 @@ def main() -> None:
         raise RuntimeError("No valid metric files were parsed")
 
     raw_df = pd.DataFrame(rows).sort_values(["dataset", "scenario", "seed"])
-    summary_df = raw_df.groupby(["dataset", "scenario"], as_index=False).agg(num_seeds=("seed", "nunique"), mse_mean=("mse", "mean"), mse_std=("mse", "std"), crps_mean=("crps", "mean"), crps_std=("crps", "std")).sort_values(["dataset", "scenario"])
+    summary_df = raw_df.groupby(["dataset", "scenario"], as_index=False).agg(
+        num_seeds=("seed", "nunique"),
+        mse_mean=("mse", "mean"),
+        mse_std=("mse", "std"),
+        crps_mean=("crps", "mean"),
+        crps_std=("crps", "std"),
+        time_mean=("time", "mean"),
+        time_std=("time", "std"),
+    ).sort_values(["dataset", "scenario"])
 
     prefix = "csdi" if args.method == "csdi" else "sssd_s4"
     summary_path = root / f"{prefix}_seed_statistics.csv"

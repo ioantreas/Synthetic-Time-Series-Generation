@@ -1,3 +1,6 @@
+import os
+import time
+import json
 import numpy as np
 import torch
 from torch.optim import Adam
@@ -130,9 +133,19 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, foldernam
         all_observed_time = []
         all_evalpoint = []
         all_generated_samples = []
+        inference_time = 0.0
         with tqdm(test_loader, mininterval=5.0, maxinterval=50.0) as it:
             for batch_no, test_batch in enumerate(it, start=1):
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
+                inference_start = time.perf_counter()
                 output = model.evaluate(test_batch, nsample)
+
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
+                inference_time += time.perf_counter() - inference_start
 
                 samples, c_target, eval_points, observed_points, observed_time = output
                 samples = samples.permute(0, 1, 3, 2)  # (B,nsample,L,K)
@@ -211,3 +224,15 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, foldernam
                 print("MAE:", mae_total / evalpoints_total)
                 print("CRPS:", CRPS)
                 print("CRPS_sum:", CRPS_sum)
+
+                timing = {
+                    "inference_time_sec": inference_time,
+                    "inference_time_per_imputation_sec": inference_time / nsample,
+                    "total_method_time_sec": inference_time,
+                }
+
+                with open(os.path.join(foldername, "timing.json"), "w") as f:
+                    json.dump(timing, f, indent=4)
+
+                print("Inference time:", inference_time)
+                print("Inference time per imputation:", inference_time / nsample)

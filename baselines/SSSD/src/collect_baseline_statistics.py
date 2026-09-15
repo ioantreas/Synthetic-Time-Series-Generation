@@ -10,8 +10,8 @@ import pandas as pd
 
 MSE_KEYS = ("mse_missing", "missing_mse", "mse")
 CRPS_KEYS = ("crps_missing", "missing_crps", "crps")
-TEXT_PATTERN = re.compile(r"(?im)^\s*(mse_missing|missing_mse|mse|crps_missing|missing_crps|crps)\s*(?:[:=]|is)\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*$")
-
+TIME_KEYS = ("total_method_time_sec", "inference_time_sec")
+TEXT_PATTERN = re.compile(r"(?im)^\s*(mse_missing|missing_mse|mse|crps_missing|missing_crps|crps|total_method_time_sec|inference_time_sec)\s*(?:[:=]|is)\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*$")
 
 def scalar_float(value: Any) -> float:
     if hasattr(value, "detach"):
@@ -51,7 +51,7 @@ def recursive_metric(data: Any, keys: tuple[str, ...]) -> float:
 
 def parse_object(data: Any, path: Path) -> dict[str, float]:
     try:
-        return {"mse": recursive_metric(data, MSE_KEYS), "crps": recursive_metric(data, CRPS_KEYS)}
+        return {"mse": recursive_metric(data, MSE_KEYS), "crps": recursive_metric(data, CRPS_KEYS), "time": recursive_metric(data, TIME_KEYS)}
     except (KeyError, TypeError, ValueError):
         pass
     if isinstance(data, (list, tuple)) and len(data) >= 3:
@@ -71,8 +71,15 @@ def read_metrics(path: Path) -> dict[str, float]:
         values: dict[str, float] = {}
         text = path.read_text(encoding="utf-8", errors="replace")
         for name, value in TEXT_PATTERN.findall(text):
-            values["crps" if "crps" in name.lower() else "mse"] = float(value)
-        missing = {"mse", "crps"} - values.keys()
+            name = name.lower()
+            if "crps" in name:
+                values["crps"] = float(value)
+            elif "mse" in name:
+                values["mse"] = float(value)
+            else:
+                values["time"] = float(value)
+
+        missing = {"mse", "crps", "time"} - values.keys()
         if missing:
             raise ValueError(f"Missing {sorted(missing)}")
         return values
@@ -145,7 +152,8 @@ def main() -> None:
         for path in candidates:
             try:
                 metrics = read_metrics(path)
-                rows.append({"dataset": dataset, "scenario": scenario, "seed": seed, "mse": metrics["mse"], "crps": metrics["crps"], "metrics_path": str(path)})
+                rows.append({"dataset": dataset, "scenario": scenario, "seed": seed, "mse": metrics["mse"],
+                             "crps": metrics["crps"], "time": metrics["time"], "metrics_path": str(path)})
                 break
             except Exception as error:
                 errors.append(f"{path.name}: {error}")
@@ -156,7 +164,15 @@ def main() -> None:
         raise RuntimeError("No valid metric files were parsed")
 
     raw_df = pd.DataFrame(rows).sort_values(["dataset", "scenario", "seed"])
-    summary_df = raw_df.groupby(["dataset", "scenario"], as_index=False).agg(num_seeds=("seed", "nunique"), mse_mean=("mse", "mean"), mse_std=("mse", "std"), crps_mean=("crps", "mean"), crps_std=("crps", "std")).sort_values(["dataset", "scenario"])
+    summary_df = raw_df.groupby(["dataset", "scenario"], as_index=False).agg(
+        num_seeds=("seed", "nunique"),
+        mse_mean=("mse", "mean"),
+        mse_std=("mse", "std"),
+        crps_mean=("crps", "mean"),
+        crps_std=("crps", "std"),
+        time_mean=("time", "mean"),
+        time_std=("time", "std"),
+    ).sort_values(["dataset", "scenario"])
 
     prefix = "csdi" if args.method == "csdi" else "sssd_s4"
     summary_path = root / f"{prefix}_seed_statistics.csv"

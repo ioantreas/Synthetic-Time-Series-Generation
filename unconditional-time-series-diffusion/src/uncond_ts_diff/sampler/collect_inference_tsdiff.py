@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import argparse
 import json
 import re
@@ -8,50 +6,34 @@ from pathlib import Path
 import pandas as pd
 
 
-MSE_KEYS = ("mse_missing", "mse", "MSE")
-CRPS_KEYS = ("crps_missing", "crps", "CRPS")
-TIME_KEYS = ("total_method_time_sec", "inference_time_sec")
-
-def find_metric(data: object, possible_keys: tuple[str, ...]) -> float:
-    """Recursively find the first matching numeric metric."""
-
-    if isinstance(data, dict):
-        for key in possible_keys:
-            if key in data:
-                return float(data[key])
-
-        for value in data.values():
-            try:
-                return find_metric(value, possible_keys)
-            except KeyError:
-                pass
-
-    raise KeyError(f"Could not find any of {possible_keys}")
-
-
-def read_metrics(path: Path) -> dict[str, float]:
+def read_primary_metrics(path: Path) -> dict[str, float]:
     with path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
+        values = json.load(file)
+
+    required = {"mse_missing", "crps_missing"}
+    missing = required - values.keys()
+
+    if missing:
+        raise ValueError(f"Missing {sorted(missing)} in {path}")
 
     return {
-        "mse": find_metric(data, MSE_KEYS),
-        "crps": find_metric(data, CRPS_KEYS),
-        "time": find_metric(data, TIME_KEYS),
+        "mse_missing": float(values["mse_missing"]),
+        "crps_missing": float(values["crps_missing"]),
     }
+
 
 def parse_structure(metrics_path: Path, root: Path) -> dict[str, object]:
     relative = metrics_path.relative_to(root)
     parts = relative.parts
 
-    # Expected:
-    # dataset/scenario/seed_N/metrics.json
+    # Expected: dataset/scenario/seed_N/metrics.json
     if len(parts) != 4:
         raise ValueError(f"Unexpected path structure: {relative}")
 
     dataset, scenario, seed_folder, filename = parts
 
     if filename != "metrics.json":
-        raise ValueError(f"Unexpected metric filename: {relative}")
+        raise ValueError(f"Unexpected filename: {relative}")
 
     match = re.fullmatch(r"seed_(\d+)", seed_folder)
     if match is None:
@@ -66,7 +48,12 @@ def parse_structure(metrics_path: Path, root: Path) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, default=Path("OUTPUT/time"), help="Root following OUTPUT/dataset/scenario/seed_N/metrics.json")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path("../../../results/inference/tsdiff"),
+        help="Root containing dataset/seed_N/scenario/metrics.json",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -84,9 +71,17 @@ def main() -> None:
     for path in metric_files:
         try:
             metadata = parse_structure(path, root)
-            metrics = read_metrics(path)
-            rows.append({**metadata, **metrics, "metrics_path": str(path)})
-        except (ValueError, KeyError, TypeError, json.JSONDecodeError, OSError) as error:
+            metrics = read_primary_metrics(path)
+
+            rows.append(
+                {
+                    **metadata,
+                    "mse": metrics["mse_missing"],
+                    "crps": metrics["crps_missing"],
+                    "metrics_path": str(path),
+                }
+            )
+        except (ValueError, OSError, json.JSONDecodeError) as error:
             print(f"Skipping {path}: {error}")
 
     if not rows:
@@ -94,18 +89,20 @@ def main() -> None:
 
     raw_df = pd.DataFrame(rows).sort_values(["dataset", "scenario", "seed"])
 
-    summary_df = raw_df.groupby(["dataset", "scenario"], as_index=False).agg(
-        num_seeds=("seed", "nunique"),
-        mse_mean=("mse", "mean"),
-        mse_std=("mse", "std"),
-        crps_mean=("crps", "mean"),
-        crps_std=("crps", "std"),
-        time_mean=("time", "mean"),
-        time_std=("time", "std"),
-    ).sort_values(["dataset", "scenario"])
+    summary_df = (
+        raw_df.groupby(["dataset", "scenario"], as_index=False)
+        .agg(
+            num_seeds=("seed", "nunique"),
+            mse_mean=("mse", "mean"),
+            mse_std=("mse", "std"),
+            crps_mean=("crps", "mean"),
+            crps_std=("crps", "std"),
+        )
+        .sort_values(["dataset", "scenario"])
+    )
 
-    raw_output = root / "diffusion_ts_seed_statistics_per_seed.csv"
-    summary_output = root / "diffusion_ts_seed_statistics.csv"
+    raw_output = root / "tsdiff_seed_statistics_per_seed.csv"
+    summary_output = root / "tsdiff_seed_statistics.csv"
 
     raw_df.to_csv(raw_output, index=False)
     summary_df.to_csv(summary_output, index=False)

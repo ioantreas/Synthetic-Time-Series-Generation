@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,6 +14,10 @@ from uncond_ts_diff.model import TSDiff
 from uncond_ts_diff.utils import extract
 from tslearn.metrics import dtw
 from sklearn.metrics import r2_score
+
+def sync_cuda():
+    if torch.cuda.is_available() and str(device).startswith("cuda"):
+        torch.cuda.synchronize()
 
 def set_torch_seed(seed):
     torch.manual_seed(seed)
@@ -175,7 +180,7 @@ def mask_forecast(data, block_size):
 
     for i in range(B):
         for c in range(C):
-            start = T - block_size
+            start = T - block_size + 1
             # if i==0 and (c==0 or c==1):
             #     start =45
             mask[i, start:start + block_size, c] = 0
@@ -223,7 +228,7 @@ def estimate_latent_observability(
         x_obs,
         mask,
         latent_steps,
-        num_samples=32,
+        num_samples=100,
         floor=0.005,
 ):
     """
@@ -274,28 +279,63 @@ def smooth_loss_fn(x_rec, mask):
     return loss / denom
 
 
-def trend_loss_fn(x_rec, mask):
-    m = mask[0, :, 0]
-    missing_idx = (m == 0).nonzero(as_tuple=True)[0]
+# def trend_loss_fn(x_rec, mask):
+#     m = mask[0, :, 0]
+#     missing_idx = (m == 0).nonzero(as_tuple=True)[0]
+#
+#     if len(missing_idx) == 0:
+#         return torch.tensor(0.0, device=x_rec.device)
+#
+#     t0 = missing_idx[0].item()
+#     t1 = missing_idx[-1].item() + 1
+#
+#     if t0 == 0 or t1 >= x_rec.shape[1]:
+#         return torch.tensor(0.0, device=x_rec.device)
+#
+#     left = x_rec[:, t0 - 1]
+#     right = x_rec[:, t1]
+#     gap = x_rec[:, t0:t1]
+#
+#     boundary_mean = 0.5 * (left + right)
+#     gap_mean = gap.mean(dim=1)
+#
+#     return ((gap_mean - boundary_mean) ** 2).mean()
 
-    if len(missing_idx) == 0:
-        return torch.tensor(0.0, device=x_rec.device)
 
-    t0 = missing_idx[0].item()
-    t1 = missing_idx[-1].item() + 1
+def get_trend_intervals(mask, min_gap_ratio=0.05):
+    intervals = []
+    B, T, C = mask.shape
+    min_gap_length = max(2, math.ceil(min_gap_ratio * T))
 
-    if t0 == 0 or t1 >= x_rec.shape[1]:
-        return torch.tensor(0.0, device=x_rec.device)
+    with torch.no_grad():
+        for b in range(B):
+            for c in range(C):
+                missing = (mask[b, :, c] == 0).detach().cpu().numpy()
+                padded = np.pad(missing.astype(np.int8), (1, 1))
+                changes = np.diff(padded)
+                starts = np.where(changes == 1)[0]
+                ends = np.where(changes == -1)[0] - 1
 
-    left = x_rec[:, t0 - 1]
-    right = x_rec[:, t1]
-    gap = x_rec[:, t0:t1]
+                for start, end in zip(starts, ends):
+                    gap_length = end - start + 1
+                    if start == 0 or end == T - 1 or gap_length < min_gap_length:
+                        continue
+                    intervals.append((b, c, int(start), int(end)))
 
-    boundary_mean = 0.5 * (left + right)
-    gap_mean = gap.mean(dim=1)
+    return intervals
 
-    return ((gap_mean - boundary_mean) ** 2).mean()
 
+def trend_loss_fn(x_rec, intervals):
+    if not intervals:
+        return x_rec.new_tensor(0.0)
+
+    losses = []
+    for b, c, start, end in intervals:
+        gap_mean = x_rec[b, start:end + 1, c].mean()
+        boundary_mean = 0.5 * (x_rec[b, start - 1, c] + x_rec[b, end + 1, c])
+        losses.append((gap_mean - boundary_mean).pow(2))
+
+    return torch.stack(losses).mean()
 
 # =========================================================
 # ENCODING HELPERS
@@ -323,13 +363,14 @@ def client_get_partial_guidance_latent(
         mask,
         latent_mean,
         latent_std,
-        steps=200,
+        steps=100,
         lr=1e-2,
         prior_weight=1e-3,
         x_true=None,
         plot=True,
         plot_channels=3,
         save_dir=None,
+        debug=False,
 ):
     """
     Target silo local anchor from partially observed local features.
@@ -340,133 +381,165 @@ def client_get_partial_guidance_latent(
     """
     ae.eval()
 
-    x_in = x_obs.clone()
-    B, T, C = x_in.shape
+    sync_cuda()
+    anchor_start = time.perf_counter()
 
-    # interpolation init using observed values only
-    for b in range(B):
-        for c in range(C):
-            m = mask[b, :, c].detach().cpu().numpy()
-            x = x_in[b, :, c].detach().cpu().numpy()
+    B, T, C = x_obs.shape
 
-            observed_idx = np.where(m == 1)[0]
-            if len(observed_idx) < 2:
-                continue
+    if args.anchor_type in ["recovered", "interpolation"]:
+        x_in = x_obs.clone()
 
-            full_idx = np.arange(T)
-            x_interp = np.interp(full_idx, observed_idx, x[observed_idx])
-            x_in[b, :, c] = torch.from_numpy(x_interp).to(x_in.device)
+        # Interpolation completion using observed values only.
+        for b in range(B):
+            for c in range(C):
+                m = mask[b, :, c].detach().cpu().numpy()
+                x = x_in[b, :, c].detach().cpu().numpy()
 
-    # init latent
-    with torch.no_grad():
-        z_init = ae.encode(x_in.permute(0, 2, 1))  # [B,L,D]
-        z_init_norm = (z_init - latent_mean) / latent_std
+                observed_idx = np.where(m == 1)[0]
+                if len(observed_idx) < 2:
+                    continue
 
-    z = z_init_norm.detach().clone().requires_grad_(True)
-    opt = torch.optim.Adam([z], lr=lr)
+                full_idx = np.arange(T)
+                x_interp = np.interp(full_idx, observed_idx, x[observed_idx])
+                x_in[b, :, c] = torch.from_numpy(x_interp).to(x_in.device)
 
-    # optimize local target latent against observed target values only
-    for _ in range(steps):
-        opt.zero_grad()
+        with torch.no_grad():
+            z_init = ae.encode(x_in.permute(0, 2, 1))
+            z_init_norm = (z_init - latent_mean) / latent_std
 
-        z_denorm = z * latent_std + latent_mean
-        x_rec = ae.decode(z_denorm).permute(0, 2, 1)
+        if args.anchor_type == "interpolation":
+            # Ablation: use the encoded interpolation directly as the anchor.
+            z = z_init_norm.detach()
 
-        obs_loss = (((x_rec - x_obs) * mask) ** 2).sum() / mask.sum().clamp_min(1.0)
-        prior_loss = ((z - z_init_norm) ** 2).mean()
-        smooth_loss = smooth_loss_fn(x_rec, mask)
-        trend_loss = trend_loss_fn(x_rec, mask)
-
-        loss = obs_loss + prior_weight * prior_loss + 0.01 * smooth_loss + 0.01 * trend_loss
-        loss.backward()
-        opt.step()
-
-    if save_dir is not None:
-        save_dir = Path(save_dir)
-        (save_dir / "plots").mkdir(parents=True, exist_ok=True)
-
-    with torch.no_grad():
-        z_init_denorm = z_init_norm * latent_std + latent_mean
-        x_init_rec = ae.decode(z_init_denorm).permute(0, 2, 1)
-
-        z_final_denorm = z * latent_std + latent_mean
-        x_final_rec = ae.decode(z_final_denorm).permute(0, 2, 1)
-
-        if x_true is not None:
-            z_full = ae.encode(x_true.permute(0, 2, 1))
-            x_full_rec = ae.decode(z_full).permute(0, 2, 1)
         else:
-            x_full_rec = None
+            # Ours: refine the interpolation-based latent anchor.
+            z = z_init_norm.detach().clone().requires_grad_(True)
+            opt = torch.optim.Adam([z], lr=lr)
+            trend_intervals = get_trend_intervals(mask, min_gap_ratio=0.05)
 
-        observed = mask == 1
-        missing = mask == 0
+            for _ in range(steps):
+                opt.zero_grad()
 
-        mse_obs_init = ((x_init_rec - x_obs)[observed] ** 2).mean().item()
-        mse_obs_final = ((x_final_rec - x_obs)[observed] ** 2).mean().item()
+                z_denorm = z * latent_std + latent_mean
+                x_rec = ae.decode(z_denorm).permute(0, 2, 1)
 
-        if x_true is not None and missing.sum() > 0:
-            mse_missing_final = ((x_final_rec - x_true)[missing] ** 2).mean().item()
-        else:
-            mse_missing_final = float("nan")
+                obs_loss = (((x_rec - x_obs) * mask) ** 2).sum() / mask.sum().clamp_min(1.0)
+                prior_loss = ((z - z_init_norm) ** 2).mean()
+                smooth_loss = smooth_loss_fn(x_rec, mask)
+                trend_loss = trend_loss_fn(x_rec, trend_intervals)
 
-        metrics = {
-            "mse_obs_init": mse_obs_init,
-            "mse_obs_final": mse_obs_final,
-            "mse_missing_final": mse_missing_final,
-        }
+                loss = obs_loss + prior_weight * prior_loss + 0.01 * smooth_loss + 0.01 * trend_loss
+                loss.backward()
+                opt.step()
 
-        if x_full_rec is not None:
-            metrics["ae_consistency_mse_init_vs_full_observed"] = (
-                (((x_init_rec - x_full_rec) * mask) ** 2).sum()
-                / mask.sum().clamp_min(1.0)
-            ).item()
+    elif args.anchor_type == "oracle":
+        if x_true is None:
+            raise ValueError("Oracle anchor requires the complete sequence.")
 
+        # Ablation upper bound: encode the actual complete sequence.
+        with torch.no_grad():
+            z_oracle = ae.encode(x_true.permute(0, 2, 1))
+            z = ((z_oracle - latent_mean) / latent_std).detach()
+
+        # Keep this defined for the existing debug code below.
+        z_init_norm = z
+
+    else:
+        raise ValueError(f"Unknown anchor_type: {args.anchor_type}")
+
+    sync_cuda()
+    anchor_time = time.perf_counter() - anchor_start
+
+    if debug:
         if save_dir is not None:
-            with open(save_dir / "metrics.json", "w") as f:
-                json.dump(metrics, f, indent=4)
-        else:
-            print("\n[CLIENT LATENT CHECK]")
-            print(metrics)
+            save_dir = Path(save_dir)
+            (save_dir / "plots").mkdir(parents=True, exist_ok=True)
 
-        if plot:
-            sample_idx = 0
-            num_plot = min(plot_channels, C)
+        with torch.no_grad():
+            z_init_denorm = z_init_norm * latent_std + latent_mean
+            x_init_rec = ae.decode(z_init_denorm).permute(0, 2, 1)
 
-            for ch in range(num_plot):
-                true = x_true[sample_idx, :, ch].cpu().numpy() if x_true is not None else None
-                obs = x_obs[sample_idx, :, ch].cpu().numpy()
-                rec_init = x_init_rec[sample_idx, :, ch].cpu().numpy()
-                rec_final = x_final_rec[sample_idx, :, ch].cpu().numpy()
-                rec_full = x_full_rec[sample_idx, :, ch].cpu().numpy() if x_full_rec is not None else None
-                m = mask[sample_idx, :, ch].cpu().numpy()
+            z_final_denorm = z * latent_std + latent_mean
+            x_final_rec = ae.decode(z_final_denorm).permute(0, 2, 1)
 
-                rec_final_obs = rec_final.copy()
-                rec_final_obs[m == 0] = np.nan
+            if x_true is not None:
+                z_full = ae.encode(x_true.permute(0, 2, 1))
+                x_full_rec = ae.decode(z_full).permute(0, 2, 1)
+            else:
+                x_full_rec = None
 
-                rec_final_miss = rec_final.copy()
-                rec_final_miss[m == 1] = np.nan
+            observed = mask == 1
+            missing = mask == 0
 
-                obs_plot = obs.copy()
-                obs_plot[m == 0] = np.nan
+            mse_obs_init = ((x_init_rec - x_obs)[observed] ** 2).mean().item()
+            mse_obs_final = ((x_final_rec - x_obs)[observed] ** 2).mean().item()
 
-                plt.figure(figsize=(10, 4))
-                if true is not None:
-                    plt.plot(true, "--", label="ground truth", linewidth=2, color="black")
-                plt.plot(obs_plot, "--", label="observed", linewidth=2)
-                if rec_full is not None:
-                    plt.plot(rec_full, label="AE full", linewidth=2, color="purple")
-                plt.plot(rec_init, label="init", linewidth=2, color="orange")
-                plt.plot(rec_final, label="optimized", linewidth=2, color="green")
-                plt.plot(rec_final_obs, label="final obs", linewidth=3, color="red")
-                plt.plot(rec_final_miss, label="final missing", linewidth=3, color="blue")
-                plt.title(f"Target silo anchor channel {ch}")
-                plt.legend()
+            if x_true is not None and missing.sum() > 0:
+                mse_missing_final = ((x_final_rec - x_true)[missing] ** 2).mean().item()
+            else:
+                mse_missing_final = float("nan")
 
-                if save_dir is not None:
-                    plt.savefig(save_dir / "plots" / f"channel_{ch}.png")
-                    plt.close()
-                else:
-                    plt.show()
+            metrics = {
+                "mse_obs_init": mse_obs_init,
+                "mse_obs_final": mse_obs_final,
+                "mse_missing_final": mse_missing_final,
+            }
+
+            if x_full_rec is not None:
+                metrics["ae_consistency_mse_init_vs_full_observed"] = (
+                    (((x_init_rec - x_full_rec) * mask) ** 2).sum()
+                    / mask.sum().clamp_min(1.0)
+                ).item()
+
+            if save_dir is not None:
+                with open(save_dir / "metrics.json", "w") as f:
+                    json.dump(metrics, f, indent=4)
+            else:
+                print("\n[CLIENT LATENT CHECK]")
+                print(metrics)
+
+            if plot:
+                sample_idx = 0
+                num_plot = min(plot_channels, C)
+
+                for ch in range(num_plot):
+                    true = x_true[sample_idx, :, ch].cpu().numpy() if x_true is not None else None
+                    obs = x_obs[sample_idx, :, ch].cpu().numpy()
+                    rec_init = x_init_rec[sample_idx, :, ch].cpu().numpy()
+                    rec_final = x_final_rec[sample_idx, :, ch].cpu().numpy()
+                    rec_full = x_full_rec[sample_idx, :, ch].cpu().numpy() if x_full_rec is not None else None
+                    m = mask[sample_idx, :, ch].cpu().numpy()
+
+                    rec_final_obs = rec_final.copy()
+                    rec_final_obs[m == 0] = np.nan
+
+                    rec_final_miss = rec_final.copy()
+                    rec_final_miss[m == 1] = np.nan
+
+                    obs_plot = obs.copy()
+                    obs_plot[m == 0] = np.nan
+
+                    plt.figure(figsize=(10, 4))
+                    if true is not None:
+                        plt.plot(true, "--", label="ground truth", linewidth=2, color="black")
+                    plt.plot(obs_plot, "--", label="observed", linewidth=2)
+                    if rec_full is not None:
+                        plt.plot(rec_full, label="AE full", linewidth=2, color="purple")
+                    plt.plot(rec_init, label="init", linewidth=2, color="orange")
+                    plt.plot(rec_final, label="optimized", linewidth=2, color="green")
+                    plt.plot(rec_final_obs, label="final obs", linewidth=3, color="red")
+                    plt.plot(rec_final_miss, label="final missing", linewidth=3, color="blue")
+                    plt.title(f"Target silo anchor channel {ch}")
+                    plt.legend()
+
+                    if save_dir is not None:
+                        plt.savefig(save_dir / "plots" / f"channel_{ch}.png")
+                        plt.close()
+                    else:
+                        plt.show()
+
+    sync_cuda()
+    weight_start = time.perf_counter()
 
     if args.latent_keep_percent == -1:
         # No guidance: all weights are exactly 0.
@@ -532,7 +605,7 @@ def client_get_partial_guidance_latent(
                 x_obs,
                 mask,
                 latent_steps=z.shape[1],
-                num_samples=32,
+                num_samples=100,
                 floor=0.005,
             )
 
@@ -564,16 +637,22 @@ def client_get_partial_guidance_latent(
 
     print("target z_weight mean:", z_weight.mean().item())
 
-    return z.detach(), z_weight
+    sync_cuda()
+    weight_time = time.perf_counter() - weight_start
 
+    timing = {
+        "anchor_time_sec": anchor_time,
+        "weight_time_sec": weight_time,
+    }
+
+    return z.detach(), z_weight, timing
 
 # =========================================================
 # BUILD HYBRID GUIDANCE
 # =========================================================
 
 def build_guidance(x_full, x_obs, mask):
-
-    z_target, z_weight = client_get_partial_guidance_latent(
+    z_target, z_weight, timing = client_get_partial_guidance_latent(
         ae,
         x_obs,
         mask,
@@ -582,17 +661,18 @@ def build_guidance(x_full, x_obs, mask):
         steps=args.client_steps,
         lr=args.client_lr,
         prior_weight=args.client_prior_weight,
-        x_true=x_full,
-        plot=True,
+        x_true=x_full if (args.debug or args.anchor_type == "oracle") else None,
+        plot=args.debug,
         plot_channels=args.num_client_plot_channels,
-        save_dir=args.current_scenario_dir / "client_debug",
+        save_dir=args.current_scenario_dir / "client_debug" if args.debug else None,
+        debug=args.debug,
     )
 
     print("Guidance target:", tuple(z_target.shape))
     print("Guidance weights:", tuple(z_weight.shape))
     print("Guidance weight mean:", z_weight.mean().item())
 
-    return z_target, z_weight
+    return z_target, z_weight, timing
 
 
 # =========================================================
@@ -633,7 +713,7 @@ def sample_guided(
         z_guidance_target,
         z_guidance_weights,
         base_scale=1.0,
-        base_repeats=40,
+        base_repeats=10,
 ):
     x = torch.randn(num_samples, seq_len, num_channels, device=device)
 
@@ -881,13 +961,20 @@ def run_scenario(name, mask_np, out_dir):
 
     set_torch_seed(args.inference_seed)
 
-    z_guidance_target, z_guidance_weights = build_guidance(
-        x_full=x_full,
-        x_obs=x_obs,
-        mask=mask,
+    z_guidance_target, z_guidance_weights, timing = build_guidance(x_full=x_full, x_obs=x_obs, mask=mask)
+
+    # Client -> server: send the latent anchor and confidence weights once.
+    client_to_server_bytes = (
+            z_guidance_target.numel() * z_guidance_target.element_size()
+            + z_guidance_weights.numel() * z_guidance_weights.element_size()
     )
 
+    generated_latent_bytes = 0
+
     set_torch_seed(args.inference_seed + 1_000_000)
+
+    sync_cuda()
+    inference_start = time.perf_counter()
 
     all_preds = []
 
@@ -909,16 +996,33 @@ def run_scenario(name, mask_np, out_dir):
             base_repeats=args.base_repeats,
         )
 
+        # Accumulate the generated latent payload to be returned once after sampling.
+        generated_latent_bytes += samples.numel() * samples.element_size()
+
         decoded = decode_full_latent(samples)
 
         all_preds.append(
             decoded.detach().cpu().numpy()
         )
 
-    all_preds = np.stack(
-        all_preds,
-        axis=1,
-    )
+    sync_cuda()
+    inference_time = time.perf_counter() - inference_start
+
+    # Server -> client: return all generated latent imputations once at the end.
+    server_to_client_bytes = generated_latent_bytes
+
+    communication_rounds = 2
+    communication_total_bytes = client_to_server_bytes + server_to_client_bytes
+
+    communication_per_imputation_bytes = communication_total_bytes / args.num_imputation_samples
+    client_to_server_bytes_per_imputation = client_to_server_bytes / args.num_imputation_samples
+    server_to_client_bytes_per_imputation = server_to_client_bytes / args.num_imputation_samples
+
+    timing["inference_time_sec"] = inference_time
+    timing["inference_time_per_imputation_sec"] = inference_time / args.num_imputation_samples
+    timing["total_method_time_sec"] = timing["anchor_time_sec"] + timing["weight_time_sec"] + inference_time
+
+    all_preds = np.stack(all_preds, axis=1)
 
     # Keep only predictions at masked positions.
     all_preds_sig = all_preds[:, :, :, :signal_channels]
@@ -998,6 +1102,21 @@ def run_scenario(name, mask_np, out_dir):
         f.write("\n=== FULL SAMPLE: DIFFUSION vs AE ===\n")
         for k, v in full_metrics_ae.items():
             f.write(f"{k}: {v}\n")
+
+        f.write("\n=== CONFIG ===\n")
+        f.write(f"anchor_type: {args.anchor_type}\n")
+        f.write(f"mask_type: {args.mask_type}\n")
+
+        f.write("\n=== TIMING ===\n")
+        for k, v in timing.items():
+            f.write(f"{k}: {v}\n")
+
+        f.write("\n=== COMMUNICATION ===\n")
+        f.write(f"communication_rounds: {communication_rounds}\n")
+        f.write(f"communication_client_to_server_bytes: {client_to_server_bytes}\n")
+        f.write(f"communication_server_to_client_bytes: {server_to_client_bytes}\n")
+        f.write(f"communication_total_bytes: {communication_total_bytes}\n")
+        f.write(f"communication_per_imputation_bytes: {communication_per_imputation_bytes}\n")
 
     print("\nSaved results to:", scenario_dir)
     print("\n=== TARGET/GUIDED SILO: DIFFUSION vs REAL ===")
@@ -1128,9 +1247,12 @@ def main():
     parser.add_argument("--latents_root", type=str, required=True)
 
     parser.add_argument("--base_scale", type=float, default=1.0)
-    parser.add_argument("--base_repeats", type=int, default=40)
+    parser.add_argument("--base_repeats", type=int, default=10)
 
-    parser.add_argument("--client_steps", type=int, default=200)
+    parser.add_argument("--anchor_type", type=str, default="recovered",  choices=["recovered", "interpolation", "oracle"],
+    help="Anchor used for latent guidance: recovered (ours), interpolation, or oracle")
+
+    parser.add_argument("--client_steps", type=int, default=100)
     parser.add_argument("--client_lr", type=float, default=1e-2)
     parser.add_argument("--client_prior_weight", type=float, default=1e-3)
     parser.add_argument("--num_client_plot_channels", type=int, default=3)
@@ -1144,6 +1266,8 @@ def main():
     )
     parser.add_argument("--mask_type", type=str, default="variance",
                         choices=["variance", "interpolation", "random", "full"])
+
+    parser.add_argument("--debug", action="store_true", help="Save diagnostic metrics and plots")
 
 
     args = parser.parse_args()
