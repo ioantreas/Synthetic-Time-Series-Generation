@@ -103,11 +103,8 @@ def main():
     if hasattr(all_observed_point, "cpu"):
         all_observed_point = all_observed_point.cpu().numpy()
 
-    # Mean prediction across stochastic samples
-    pred = np.mean(
-        all_generated_samples,
-        axis=1,
-    )
+    # Median prediction across stochastic samples
+    pred = np.median(all_generated_samples, axis=1)
 
     N, T, C = pred.shape
 
@@ -171,6 +168,7 @@ def main():
     mse_missing = np.mean(
         (pred[missing_mask] - all_target[missing_mask]) ** 2
     )
+
 
     mae_missing = np.mean(
         np.abs(

@@ -143,7 +143,7 @@ def main() -> None:
 
     rows = []
     for dataset, scenario, seed, seed_dir in runs:
-        candidates = metric_candidates(seed_dir)
+        candidates = [seed_dir / "metrics.json"] if args.method == "csdi" else metric_candidates(seed_dir)
         if not candidates:
             print(f"Skipping {seed_dir}: no supported metric file found")
             continue
